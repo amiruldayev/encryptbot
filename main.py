@@ -2,11 +2,14 @@ import telebot
 from telebot import types
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
-from Crypto.Random import get_random_bytes
 import base64
+import mysql.connector
+
 
 TOKEN = '6323376518:AAHqdDLlJfhBxEos-yICy_wW8JDEy225qMk'
 bot = telebot.TeleBot(TOKEN)
+
+
 
 # Состояния для отслеживания контекста диалога
 states = {}
@@ -16,13 +19,42 @@ text_to_encrypt = None
 encryption_key = None
 
 
+# Подключение к базе данных
+db_connection = mysql.connector.connect(
+    host="localhost",
+    user="root",
+    password="root",
+    database="encbot"
+)
+
+# Создание курсора для выполнения SQL-запросов
+cursor = db_connection.cursor()
+
+# Создание таблицы для хранения данных
+table_creation_query = """
+CREATE TABLE IF NOT EXISTS encrypted_data (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    encrypted_text TEXT,
+    decrypted_text TEXT,
+    encryption_key INT
+);
+"""
+cursor.execute(table_creation_query)
+
+# Закрываем курсор и подключение к базе данных
+cursor.close()
+db_connection.close()
+
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn_enc = types.KeyboardButton('Encrypt text')
     btn_des = types.KeyboardButton('Decrypt text')
-    markup.add(btn_enc, btn_des)
+    btn_fenc = types.KeyboardButton('Encrypt text to file')
+    btn_fdes = types.KeyboardButton('Decrypt text to file')
+
+    markup.add(btn_enc, btn_des, btn_fenc, btn_fdes)
     bot.send_message(message.chat.id, 'SIS-2121 Amiruldayev Emil, Rakhmetuly Zhanserik, Nurpeisov Daniyar',
                      reply_markup=markup)
 
@@ -52,23 +84,21 @@ def handle_encrypt_text(message):
 # Обработчик для ответа на ключ для шифрования
 @bot.message_handler(func=lambda message: states.get(message.chat.id) == 'encrypt_key')
 def handle_encrypt_key(message):
-    global encryption_key
-    # Получаем ключ для шифрования из сообщения пользователя
+    global encryption_key, text_to_encrypt
+
     encryption_key = message.text
 
-    # Проверяем, что ключ состоит только из цифр
     if not encryption_key.isdigit():
         bot.send_message(message.chat.id, 'Please enter a valid numeric key.')
         return
 
-    # Здесь вы можете использовать ваш алгоритм шифрования
-    # Например, простой шифр цезаря
-    ciphertext = encrypt(text_to_encrypt, int(encryption_key))
+    # Зашифровываем текст
+    encrypted_text = encrypt(text_to_encrypt, int(encryption_key))
 
-    # Отправляем зашифрованный текст и ключ пользователю
-    bot.send_message(message.chat.id, f'Encrypted text: {ciphertext}\nEncryption key: {encryption_key}')
+    # Сохраняем данные в базе данных
+    save_to_database(encrypted_text, text_to_encrypt, int(encryption_key))
 
-    # Сбрасываем состояние
+    bot.send_message(message.chat.id, f'Encrypted text: {encrypted_text}\nEncryption key: {encryption_key}')
     states[message.chat.id] = None
 
 
@@ -97,22 +127,21 @@ def handle_decrypt_text(message):
 # Обработчик для ответа на ключ для расшифрования
 @bot.message_handler(func=lambda message: states.get(message.chat.id) == 'decrypt_key')
 def handle_decrypt_key(message):
-    global encryption_key
-    # Получаем ключ для расшифрования из сообщения пользователя
+    global text_to_encrypt
+
     decryption_key = message.text
 
-    # Проверяем, что ключ состоит только из цифр
     if not decryption_key.isdigit():
         bot.send_message(message.chat.id, 'Please enter a valid numeric key.')
         return
 
+    # Извлекаем данные из базы данных
+    encrypted_data = fetch_from_database(int(decryption_key))
+
     # Расшифровываем текст
-    decrypted_text = decrypt(text_to_encrypt, int(decryption_key))
+    decrypted_text = decrypt(encrypted_data['encrypted_text'], int(decryption_key))
 
-    # Отправляем расшифрованный текст
     bot.send_message(message.chat.id, f'Decrypted text: {decrypted_text}')
-
-    # Сбрасываем состояние
     states[message.chat.id] = None
 
 
@@ -147,6 +176,44 @@ def decrypt(ciphertext, key):
     # Расшифровываем текст и убираем padding
     decrypted_text = unpad(cipher.decrypt(ciphertext), AES.block_size).decode('utf-8')
     return decrypted_text
+
+
+def save_to_database(encrypted_text, decrypted_text, encryption_key):
+    db_connection = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="root",
+        database="encbot"
+    )
+
+    cursor = db_connection.cursor()
+
+    insert_query = "INSERT INTO encrypted_data (encrypted_text, decrypted_text, encryption_key) VALUES (%s, %s, %s)"
+    cursor.execute(insert_query, (encrypted_text, decrypted_text, encryption_key))
+
+    db_connection.commit()
+
+    cursor.close()
+    db_connection.close()
+
+def fetch_from_database(encryption_key):
+    db_connection = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="root",
+        database="encbot"
+    )
+
+    cursor = db_connection.cursor(dictionary=True)
+
+    select_query = "SELECT encrypted_text FROM encrypted_data WHERE encryption_key = %s"
+    cursor.execute(select_query, (encryption_key,))
+    result = cursor.fetchone()
+
+    cursor.close()
+    db_connection.close()
+
+    return result
 
 
 # Запуск бота
