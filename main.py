@@ -20,30 +20,36 @@ encryption_key = None
 
 
 # Подключение к базе данных
-db_connection = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="root",
-    database="encbot"
-)
+try:
+    db_connection = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="root",
+        database="encbot"
+    )
 
 # Создание курсора для выполнения SQL-запросов
-cursor = db_connection.cursor()
+    cursor = db_connection.cursor()
 
 # Создание таблицы для хранения данных
-table_creation_query = """
-CREATE TABLE IF NOT EXISTS encrypted_data (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    encrypted_text TEXT,
-    decrypted_text TEXT,
-    encryption_key INT
-);
-"""
-cursor.execute(table_creation_query)
+    table_creation_query = """
+        CREATE TABLE IF NOT EXISTS encrypted_data (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            encrypted_text TEXT,
+            decrypted_text TEXT,
+            encryption_key INT
+        );
+        """
+    cursor.execute(table_creation_query)
 
-# Закрываем курсор и подключение к базе данных
-cursor.close()
-db_connection.close()
+except mysql.connector.Error as err:
+    print(f"Error: {err}")
+    # Обработка ошибки (логирование, вывод сообщения и т. д.)
+
+finally:
+    # Закрываем курсор и соединение в блоке finally, чтобы гарантировать их закрытие, даже если произойдет исключение
+    cursor.close()
+    db_connection.close()
 
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
@@ -51,10 +57,9 @@ def handle_start(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn_enc = types.KeyboardButton('Encrypt text')
     btn_des = types.KeyboardButton('Decrypt text')
-    btn_fenc = types.KeyboardButton('Encrypt text to file')
-    btn_fdes = types.KeyboardButton('Decrypt text to file')
 
-    markup.add(btn_enc, btn_des, btn_fenc, btn_fdes)
+
+    markup.add(btn_enc, btn_des)
     bot.send_message(message.chat.id, 'SIS-2121 Amiruldayev Emil, Rakhmetuly Zhanserik, Nurpeisov Daniyar',
                      reply_markup=markup)
 
@@ -95,10 +100,16 @@ def handle_encrypt_key(message):
     # Зашифровываем текст
     encrypted_text = encrypt(text_to_encrypt, int(encryption_key))
 
+    # Сохраняем зашифрованный текст в файл
+    save_to_file('encrypted_text.txt', encrypted_text)
+
     # Сохраняем данные в базе данных
     save_to_database(encrypted_text, text_to_encrypt, int(encryption_key))
 
-    bot.send_message(message.chat.id, f'Encrypted text: {encrypted_text}\nEncryption key: {encryption_key}')
+    # Отправляем файл пользователю
+    with open('encrypted_text.txt', 'rb') as file:
+        bot.send_document(message.chat.id, file)
+
     states[message.chat.id] = None
 
 
@@ -114,14 +125,18 @@ def handle_decrypt_start(message):
 @bot.message_handler(func=lambda message: states.get(message.chat.id) == 'decrypt_text')
 def handle_decrypt_text(message):
     global text_to_encrypt
-    # Получаем текст для расшифрования из сообщения пользователя
-    text_to_encrypt = message.text
+    try:
+        # Получаем текст для расшифрования из сообщения пользователя
+        text_to_encrypt = message.text
 
-    # Спрашиваем у пользователя ключ для расшифрования
-    bot.send_message(message.chat.id, 'Enter the key for decryption')
+        # Спрашиваем у пользователя ключ для расшифрования
+        bot.send_message(message.chat.id, 'Enter the key for decryption')
 
-    # Устанавливаем состояние "ожидание ключа для расшифрования"
-    states[message.chat.id] = 'decrypt_key'
+        # Устанавливаем состояние "ожидание ключа для расшифрования"
+        states[message.chat.id] = 'decrypt_key'
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f'Произошла неожиданная ошибка: {str(e)}')
 
 
 # Обработчик для ответа на ключ для расшифрования
@@ -129,20 +144,31 @@ def handle_decrypt_text(message):
 def handle_decrypt_key(message):
     global text_to_encrypt
 
-    decryption_key = message.text
+    try:
+        decryption_key = message.text
 
-    if not decryption_key.isdigit():
-        bot.send_message(message.chat.id, 'Please enter a valid numeric key.')
-        return
+        if not decryption_key.isdigit():
+            bot.send_message(message.chat.id, 'Please enter a valid numeric key.')
+            return
 
-    # Извлекаем данные из базы данных
-    encrypted_data = fetch_from_database(int(decryption_key))
+        # Извлекаем данные из базы данных
+        encrypted_data = fetch_from_database(int(decryption_key))
 
-    # Расшифровываем текст
-    decrypted_text = decrypt(encrypted_data['encrypted_text'], int(decryption_key))
+        # Расшифровываем текст
+        decrypted_text = decrypt(encrypted_data['encrypted_text'], int(decryption_key))
 
-    bot.send_message(message.chat.id, f'Decrypted text: {decrypted_text}')
-    states[message.chat.id] = None
+        # Сохраняем расшифрованный текст в файл
+        save_to_file('decrypted_text.txt', decrypted_text)
+
+        # Отправляем файл пользователю
+        with open('decrypted_text.txt', 'rb') as file:
+            bot.send_document(message.chat.id, file)
+
+    except ValueError as e:
+        bot.send_message(message.chat.id, f'Ошибка: {str(e)}')
+
+    finally:
+        states[message.chat.id] = None
 
 
 # Ваша функция шифрования с использованием PyCryptodome
@@ -178,42 +204,58 @@ def decrypt(ciphertext, key):
     return decrypted_text
 
 
+def save_to_file(file_path, content):
+    with open(file_path, 'w', encoding='utf-8') as file:
+        file.write(content)
+
+
+
 def save_to_database(encrypted_text, decrypted_text, encryption_key):
-    db_connection = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="root",
-        database="encbot"
-    )
+    try:
+        db_connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="root",
+            database="encbot"
+        )
 
-    cursor = db_connection.cursor()
+        cursor = db_connection.cursor()
 
-    insert_query = "INSERT INTO encrypted_data (encrypted_text, decrypted_text, encryption_key) VALUES (%s, %s, %s)"
-    cursor.execute(insert_query, (encrypted_text, decrypted_text, encryption_key))
+        insert_query = "INSERT INTO encrypted_data (encrypted_text, decrypted_text, encryption_key) VALUES (%s, %s, %s)"
+        cursor.execute(insert_query, (encrypted_text, decrypted_text, encryption_key))
 
-    db_connection.commit()
+        db_connection.commit()
 
-    cursor.close()
-    db_connection.close()
+    except mysql.connector.Error as e:
+        print(f"Error: {e}")
+
+    finally:
+        cursor.close()
+        db_connection.close()
 
 def fetch_from_database(encryption_key):
-    db_connection = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="root",
-        database="encbot"
-    )
+    try:
+        db_connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="root",
+            database="encbot"
+        )
 
-    cursor = db_connection.cursor(dictionary=True)
+        cursor = db_connection.cursor(dictionary=True)
 
-    select_query = "SELECT encrypted_text FROM encrypted_data WHERE encryption_key = %s"
-    cursor.execute(select_query, (encryption_key,))
-    result = cursor.fetchone()
+        select_query = "SELECT encrypted_text FROM encrypted_data WHERE encryption_key = %s"
+        cursor.execute(select_query, (encryption_key,))
+        result = cursor.fetchone()
 
-    cursor.close()
-    db_connection.close()
+    except mysql.connector.Error as e:
+        print(f"Error: {e}")
+        result = None
 
-    return result
+    finally:
+        cursor.close()
+        db_connection.close()
+        return result
 
 
 # Запуск бота
