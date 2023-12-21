@@ -6,10 +6,55 @@ import base64
 import mysql.connector
 
 
+class DatabaseManager:
+    def __init__(self, host, user, password, database):
+        self.host = host
+        self.user = user
+        self.password = password
+        self.database = database
+        self.connection = None
+        self.cursor = None
+
+    def connect(self):
+        self.connection = mysql.connector.connect(
+            host=self.host,
+            user=self.user,
+            password=self.password,
+            database=self.database
+        )
+        self.cursor = self.connection.cursor()
+
+    def disconnect(self):
+        if self.cursor:
+            self.cursor.close()
+        if self.connection:
+            self.connection.close()
+
+    def create_table(self):
+        table_creation_query = """
+            CREATE TABLE IF NOT EXISTS encrypted_data (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                encrypted_text TEXT,
+                decrypted_text TEXT,
+                encryption_key INT
+            );
+        """
+        self.cursor.execute(table_creation_query)
+
+    def insert_data(self, encrypted_text, decrypted_text, encryption_key):
+        insert_query = "INSERT INTO encrypted_data (encrypted_text, decrypted_text, encryption_key) VALUES (%s, %s, %s)"
+        self.cursor.execute(insert_query, (encrypted_text, decrypted_text, encryption_key))
+        self.connection.commit()
+
+    def fetch_data(self, encryption_key):
+        select_query = "SELECT encrypted_text FROM encrypted_data WHERE encryption_key = %s"
+        self.cursor.execute(select_query, (encryption_key,))
+        result = self.cursor.fetchone()
+        return result
+
+
 TOKEN = '6323376518:AAHqdDLlJfhBxEos-yICy_wW8JDEy225qMk'
 bot = telebot.TeleBot(TOKEN)
-
-
 
 # Состояния для отслеживания контекста диалога
 states = {}
@@ -18,38 +63,19 @@ states = {}
 text_to_encrypt = None
 encryption_key = None
 
+# Создаем экземпляр DatabaseManager
+db_manager = DatabaseManager(host="localhost", user="root", password="root", database="encbot")
 
 # Подключение к базе данных
 try:
-    db_connection = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="root",
-        database="encbot"
-    )
-
-# Создание курсора для выполнения SQL-запросов
-    cursor = db_connection.cursor()
-
-# Создание таблицы для хранения данных
-    table_creation_query = """
-        CREATE TABLE IF NOT EXISTS encrypted_data (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            encrypted_text TEXT,
-            decrypted_text TEXT,
-            encryption_key INT
-        );
-        """
-    cursor.execute(table_creation_query)
+    db_manager.connect()
+    db_manager.create_table()
 
 except mysql.connector.Error as err:
     print(f"Error: {err}")
-    # Обработка ошибки (логирование, вывод сообщения и т. д.)
 
 finally:
-    # Закрываем курсор и соединение в блоке finally, чтобы гарантировать их закрытие, даже если произойдет исключение
-    cursor.close()
-    db_connection.close()
+    db_manager.disconnect()
 
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
@@ -58,11 +84,9 @@ def handle_start(message):
     btn_enc = types.KeyboardButton('Encrypt text')
     btn_des = types.KeyboardButton('Decrypt text')
 
-
     markup.add(btn_enc, btn_des)
     bot.send_message(message.chat.id, 'SIS-2121 Amiruldayev Emil, Rakhmetuly Zhanserik, Nurpeisov Daniyar',
                      reply_markup=markup)
-
 
 # Обработчик для кнопки "Encrypt text"
 @bot.message_handler(func=lambda message: message.text == 'Encrypt text')
@@ -70,7 +94,6 @@ def handle_encrypt_start(message):
     # Устанавливаем состояние "ожидание текста для шифрования"
     states[message.chat.id] = 'encrypt_text'
     bot.send_message(message.chat.id, 'Enter the text that needs to be encrypted')
-
 
 # Обработчик для ответа на текст для шифрования
 @bot.message_handler(func=lambda message: states.get(message.chat.id) == 'encrypt_text')
@@ -84,7 +107,6 @@ def handle_encrypt_text(message):
 
     # Устанавливаем состояние "ожидание ключа для шифрования"
     states[message.chat.id] = 'encrypt_key'
-
 
 # Обработчик для ответа на ключ для шифрования
 @bot.message_handler(func=lambda message: states.get(message.chat.id) == 'encrypt_key')
@@ -112,14 +134,12 @@ def handle_encrypt_key(message):
 
     states[message.chat.id] = None
 
-
 # Обработчик для кнопки "Decrypt text"
 @bot.message_handler(func=lambda message: message.text == 'Decrypt text')
 def handle_decrypt_start(message):
     # Устанавливаем состояние "ожидание текста для расшифрования"
     states[message.chat.id] = 'decrypt_text'
     bot.send_message(message.chat.id, 'Enter the text that needs to be decrypted')
-
 
 # Обработчик для ответа на текст для расшифрования
 @bot.message_handler(func=lambda message: states.get(message.chat.id) == 'decrypt_text')
@@ -137,7 +157,6 @@ def handle_decrypt_text(message):
 
     except Exception as e:
         bot.send_message(message.chat.id, f'Произошла неожиданная ошибка: {str(e)}')
-
 
 # Обработчик для ответа на ключ для расшифрования
 @bot.message_handler(func=lambda message: states.get(message.chat.id) == 'decrypt_key')
@@ -170,7 +189,6 @@ def handle_decrypt_key(message):
     finally:
         states[message.chat.id] = None
 
-
 # Ваша функция шифрования с использованием PyCryptodome
 def encrypt(text, key):
     cipher = AES.new(key.to_bytes(16, byteorder='big'), AES.MODE_CBC)
@@ -185,7 +203,6 @@ def encrypt(text, key):
     # Кодирование в base64 для удобства передачи
     ciphertext_base64 = base64.b64encode(cipher.iv + ciphertext).decode('utf-8')
     return ciphertext_base64
-
 
 # Ваша функция расшифрования с использованием PyCryptodome
 def decrypt(ciphertext, key):
@@ -203,12 +220,9 @@ def decrypt(ciphertext, key):
     decrypted_text = unpad(cipher.decrypt(ciphertext), AES.block_size).decode('utf-8')
     return decrypted_text
 
-
 def save_to_file(file_path, content):
     with open(file_path, 'w', encoding='utf-8') as file:
         file.write(content)
-
-
 
 def save_to_database(encrypted_text, decrypted_text, encryption_key):
     try:
@@ -256,7 +270,6 @@ def fetch_from_database(encryption_key):
         cursor.close()
         db_connection.close()
         return result
-
 
 # Запуск бота
 bot.polling(none_stop=True, interval=0)
